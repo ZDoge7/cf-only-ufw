@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # =========================================================
 # Cloudflare UFW Auto-Shield (One-Liner Edition)
@@ -8,7 +9,7 @@
 # --- 默认配置 ---
 SSH_PORT=22
 FORCE_MODE=false
-CF_PORTS="80,443"
+CF_PORTS=(80 443)
 
 # --- 颜色定义 ---
 RED='\033[0;31m'
@@ -25,6 +26,13 @@ usage() {
     echo -e "  -f          强制模式 (跳过部分确认)"
     echo -e "  -h          显示帮助信息"
     exit 1
+}
+
+validate_port() {
+    if ! [[ "$1" =~ ^[0-9]+$ ]] || [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
+        echo -e "${RED}[Error] 无效的 SSH 端口: $1 (有效范围: 1-65535)。${NC}"
+        exit 1
+    fi
 }
 
 # --- ASCII Logo (致敬 YABS) ---
@@ -52,6 +60,8 @@ while getopts "p:fh" opt; do
   esac
 done
 
+validate_port "$SSH_PORT"
+
 # --- 主逻辑开始 ---
 print_logo
 
@@ -62,6 +72,15 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo -e "${GREEN}==> 目标 SSH 端口: ${SSH_PORT}${NC}"
+
+if [ "$FORCE_MODE" = false ]; then
+    echo -e "${YELLOW}即将应用 UFW 规则，可能影响现有网络访问。${NC}"
+    read -r -p "继续执行？(y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}已取消执行。${NC}"
+        exit 0
+    fi
+fi
 
 # 环境安装 (curl, ufw)
 echo -e "${YELLOW}[1/5] 检查系统环境...${NC}"
@@ -78,8 +97,8 @@ fi
 
 # 获取 IP
 echo -e "${YELLOW}[2/5] 获取 Cloudflare IP 列表...${NC}"
-CF_IPV4=$(curl -s https://www.cloudflare.com/ips-v4)
-CF_IPV6=$(curl -s https://www.cloudflare.com/ips-v6)
+CF_IPV4=$(curl -fsSL --connect-timeout 10 --max-time 20 https://www.cloudflare.com/ips-v4)
+CF_IPV6=$(curl -fsSL --connect-timeout 10 --max-time 20 https://www.cloudflare.com/ips-v6 || true)
 
 if [ -z "$CF_IPV4" ]; then
     echo -e "${RED}[Error] 无法连接 Cloudflare IP 接口。${NC}"
@@ -88,11 +107,11 @@ fi
 
 # 清理旧规则
 echo -e "${YELLOW}[3/5] 清理旧规则...${NC}"
-ufw delete allow 80/tcp > /dev/null 2>&1
-ufw delete allow 443/tcp > /dev/null 2>&1
-ufw delete allow 'Nginx Full' > /dev/null 2>&1
-ufw delete allow 'Nginx HTTP' > /dev/null 2>&1
-ufw delete allow 'Nginx HTTPS' > /dev/null 2>&1
+ufw --force delete allow 80/tcp > /dev/null 2>&1 || true
+ufw --force delete allow 443/tcp > /dev/null 2>&1 || true
+ufw --force delete allow 'Nginx Full' > /dev/null 2>&1 || true
+ufw --force delete allow 'Nginx HTTP' > /dev/null 2>&1 || true
+ufw --force delete allow 'Nginx HTTPS' > /dev/null 2>&1 || true
 
 # 应用新规则
 echo -e "${YELLOW}[4/5] 配置防火墙规则...${NC}"
@@ -104,13 +123,22 @@ if ! ufw status | grep -q "$SSH_PORT/tcp"; then
 fi
 
 # 2. 添加 CF 白名单
-for ip in $CF_IPV4; do ufw allow proto tcp from "$ip" to any port "$CF_PORTS" comment 'Cloudflare IP' > /dev/null; done
-for ip in $CF_IPV6; do ufw allow proto tcp from "$ip" to any port "$CF_PORTS" comment 'Cloudflare IP' > /dev/null; done
+for ip in $CF_IPV4; do
+    for port in "${CF_PORTS[@]}"; do
+        ufw allow proto tcp from "$ip" to any port "$port" comment 'Cloudflare IP' > /dev/null
+    done
+done
+
+for ip in $CF_IPV6; do
+    for port in "${CF_PORTS[@]}"; do
+        ufw allow proto tcp from "$ip" to any port "$port" comment 'Cloudflare IP' > /dev/null
+    done
+done
 
 # 重载与启用
 echo -e "${YELLOW}[5/5] 启用防火墙...${NC}"
 ufw reload > /dev/null
-echo "y" | ufw enable > /dev/null 2>&1
+ufw --force enable > /dev/null 2>&1
 
 echo -e "${GREEN}"
 echo "================================================"
