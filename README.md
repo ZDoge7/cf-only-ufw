@@ -22,6 +22,7 @@
 - **防自锁机制**：强制保留 SSH 端口访问权限，防止配置防火墙时将自己关在外面。
 - **IPv4 & IPv6**：完整支持 Cloudflare 的所有 IP 段。
 - **一键执行**：支持 `curl | bash` 一键远程运行，无需手动下载。
+- **Tunnel Connector 自动化**：可选自动安装并配置 `cloudflared`，便于后续在 Cloudflare Dashboard 中直接做域名到端口映射。
 
 ## 🚀 快速开始
 
@@ -50,6 +51,7 @@ sudo bash cf-ufw.sh
 |------|------|--------|
 | `-p <port>` | 指定 SSH 端口 | `22` |
 | `-f` | 强制模式，跳过部分确认 | 关闭 |
+| `-t <token>` | 自动安装并配置 cloudflared（Tunnel Token） | 关闭 |
 | `-h` | 显示帮助信息 | - |
 
 **示例：**
@@ -57,17 +59,21 @@ sudo bash cf-ufw.sh
 ```bash
 # 自定义 SSH 端口为 2222，并启用强制模式
 sudo bash cf-ufw.sh -p 2222 -f
+
+# 同时自动配置 cloudflared Connector（推荐配合 -f）
+sudo bash cf-ufw.sh -f -t <your_tunnel_token>
 ```
 
 ## 🔧 工作原理
 
-脚本执行以下 5 个步骤：
+脚本默认执行以下 5 个步骤（若传入 `-t` 则会追加第 6 步）：
 
 1. **检查系统环境** — 确认为 Debian/Ubuntu 系统，自动安装缺失的 `curl` 和 `ufw`。
 2. **获取 Cloudflare IP** — 从 Cloudflare 官方接口拉取最新的 IPv4 和 IPv6 地址段。
 3. **清理旧规则** — 删除可能导致源站 IP 暴露的宽泛放行规则（如 `Nginx Full`、`allow 80/tcp`）。
 4. **配置白名单规则** — 为所有 Cloudflare IP 段添加 UFW 放行规则，仅允许其访问 80/443 端口。
 5. **启用防火墙** — 重载并启用 UFW，使规则立即生效。
+6. **配置 cloudflared（可选）** — 自动安装 cloudflared 并使用 Tunnel Token 注册 systemd 服务。
 
 ## ⚠️ 注意事项
 
@@ -75,6 +81,7 @@ sudo bash cf-ufw.sh -p 2222 -f
 - 执行前请确认你的 SSH 端口，如果使用了非标准端口，务必通过 `-p` 参数指定，否则可能导致 SSH 连接中断。
 - 脚本仅适用于 **Debian / Ubuntu** 系统。
 - Cloudflare 会不定期更新其 IP 段，建议定期重新运行此脚本以保持规则最新。
+- 使用 `-t` 时，需要提前在 Cloudflare Zero Trust 中创建 Tunnel 并复制 Token。
 
 ### 定期自动更新（可选）
 

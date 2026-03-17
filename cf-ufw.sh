@@ -10,6 +10,7 @@ set -euo pipefail
 SSH_PORT=22
 FORCE_MODE=false
 CF_PORTS=(80 443)
+CLOUDFLARED_TOKEN=""
 
 # --- 颜色定义 ---
 RED='\033[0;31m'
@@ -24,6 +25,7 @@ usage() {
     echo -e "选项:"
     echo -e "  -p <port>   指定 SSH 端口 (默认: 22)"
     echo -e "  -f          强制模式 (跳过部分确认)"
+    echo -e "  -t <token>  自动安装并配置 cloudflared (Tunnel Token)"
     echo -e "  -h          显示帮助信息"
     exit 1
 }
@@ -31,6 +33,38 @@ usage() {
 validate_port() {
     if ! [[ "$1" =~ ^[0-9]+$ ]] || [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
         echo -e "${RED}[Error] 无效的 SSH 端口: $1 (有效范围: 1-65535)。${NC}"
+        exit 1
+    fi
+}
+
+# --- cloudflared 自动配置 ---
+setup_cloudflared() {
+    local token="$1"
+
+    echo -e "${YELLOW}[6/6] 配置 cloudflared Connector...${NC}"
+
+    if ! command -v cloudflared &> /dev/null; then
+        echo -e "   -> 安装 cloudflared..."
+        install -m 0755 -d /usr/share/keyrings
+        curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+        chmod a+r /usr/share/keyrings/cloudflare-main.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+            > /etc/apt/sources.list.d/cloudflared.list
+        apt-get update -qq
+        apt-get install -y -qq cloudflared
+    else
+        echo -e "   -> cloudflared 已安装，跳过安装步骤。"
+    fi
+
+    echo -e "   -> 注册 cloudflared systemd 服务..."
+    cloudflared service uninstall > /dev/null 2>&1 || true
+    cloudflared service install "$token" > /dev/null
+    systemctl enable --now cloudflared > /dev/null 2>&1 || true
+
+    if systemctl is-active --quiet cloudflared; then
+        echo -e "${GREEN}   -> cloudflared 服务运行中。${NC}"
+    else
+        echo -e "${RED}[Error] cloudflared 服务启动失败，请检查: journalctl -u cloudflared -e${NC}"
         exit 1
     fi
 }
@@ -51,10 +85,11 @@ print_logo() {
 
 # --- 参数解析 ---
 # 这一步是 One-Liner 的核心，允许 curl | bash -s -- -p 1234 这种用法
-while getopts "p:fh" opt; do
+while getopts "p:ft:h" opt; do
   case $opt in
     p) SSH_PORT=$OPTARG ;;
     f) FORCE_MODE=true ;;
+    t) CLOUDFLARED_TOKEN=$OPTARG ;;
     h) usage ;;
     *) usage ;;
   esac
@@ -136,14 +171,26 @@ for ip in $CF_IPV6; do
 done
 
 # 重载与启用
-echo -e "${YELLOW}[5/5] 启用防火墙...${NC}"
+if [ -n "$CLOUDFLARED_TOKEN" ]; then
+    echo -e "${YELLOW}[5/6] 启用防火墙...${NC}"
+else
+    echo -e "${YELLOW}[5/5] 启用防火墙...${NC}"
+fi
 ufw reload > /dev/null
 ufw --force enable > /dev/null 2>&1
+
+if [ -n "$CLOUDFLARED_TOKEN" ]; then
+    setup_cloudflared "$CLOUDFLARED_TOKEN"
+fi
 
 echo -e "${GREEN}"
 echo "================================================"
 echo "   配置完成！Success!"
 echo "   - SSH 端口 $SSH_PORT: 已放行"
 echo "   - Web 端口 80/443: 仅 Cloudflare 可访问"
+if [ -n "$CLOUDFLARED_TOKEN" ]; then
+    echo "   - cloudflared: 已安装并连接 Tunnel"
+    echo "   - 下一步: 在 Cloudflare Dashboard > Zero Trust > Networks > Tunnels 中配置域名/端口映射"
+fi
 echo "================================================"
 echo -e "${NC}"
